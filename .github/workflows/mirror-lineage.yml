@@ -1,0 +1,50 @@
+name: Reset kernel to current LineageOS 24.0 baseline
+on:
+  push:
+    paths:
+      - .github/workflows/mirror-lineage.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: refresh-lineage-blueline
+  cancel-in-progress: false
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          lfs: false
+      - name: Replace old Infinity files with exact LineageOS source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name Hecker
+          git config user.email 118846180+its-hecker@users.noreply.github.com
+          git remote add lineage-source https://github.com/its-hecker/android_kernel_google_msm-4.9.git
+          git fetch --no-tags --depth=1 lineage-source +refs/heads/lineage-24.0:refs/remotes/lineage-source/lineage-24.0
+          SOURCE_SHA=$(git rev-parse refs/remotes/lineage-source/lineage-24.0)
+          test "$SOURCE_SHA" = "484dddd90e130900b4f0cf0ccb5b148b263f7fb4" || { echo "LineageOS head moved: inspect before updating"; exit 1; }
+          export SOURCE_SHA
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          baseline = set(subprocess.check_output(["git","ls-tree","-r","--name-only",os.environ["SOURCE_SHA"]], text=True).splitlines())
+          tracked = subprocess.check_output(["git","ls-files","-z"]).decode().split("\0")
+          reserved = {".github/workflows/mirror-lineage.yml"}
+          for path in tracked:
+              if path and path not in baseline and path not in reserved:
+                  subprocess.run(["git", "rm", "-f", "-q", "--", path], check=True)
+          PY
+          GIT_LFS_SKIP_SMUDGE=1 git checkout "$SOURCE_SHA" -- . ':(exclude).github/workflows'
+          test -f Makefile
+          test -f arch/arm64/configs/b1c1_defconfig
+          git add -A
+          git diff --cached --stat
+          if git diff --cached --quiet; then
+            echo "Already matches LineageOS snapshot"
+            exit 0
+          fi
+          git commit -m "Reset Pixel 3 kernel to proven LineageOS 24.0 source"
+          git push origin HEAD:main
